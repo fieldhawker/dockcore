@@ -1,0 +1,131 @@
+
+# coreosのvagrant環境を作成
+mkdir dockcore
+cd dockcore
+git clone https://github.com/coreos/coreos-vagrant.git
+cd coreos-vagrant
+vi Vagrantfile
+------ ブラウザアクセス時に使用するIPアドレスと共有ディレクトリを指定 ---
+config.vm.network :private_network, ip: "192.168.33.20"
+config.vm.synced_folder "/Users/fieldhawker/Documents/sep/20151010_puppet/dockcore/coreos-vagrant/share", "/home/core/share", id: "core", :nfs => true,  :mount_options => ['nolock,vers=3,udp']
+------
+mkdir share
+touch share/test.txt
+vagrant up
+# *** ここでパスワードを聞かれるのでvagrantと入力
+vagrant ssh
+
+# ここからcoreos上での作業
+
+# dockerはインストール済み
+docker version
+# dockerをインストールする必要がある時は以下のコマンドを
+wget -qO- https://get.docker.com/ | sh
+
+# panamax インストール
+mkdir ~/panamax && cd ~/panamax
+curl -O http://download.panamax.io/installer/panamax-latest.tar.gz
+tar xzf panamax-latest.tar.gz
+sudo ./coreos install
+
+# 試しにphpを導入
+docker run -d php:5.6-apache
+docker run -p 80:80 -d php:5.6-apache
+(ブラウザで192.168.33.20に接続してapacheに接続できることを確認)
+
+# 試しに作ったものを削除
+docker ps -a
+docker rm -f 26fc450c76ab
+docker rm -f 6718a35d3819
+docker rm -f 1888d9849c37
+docker rm -f 8a39ce3ce88c
+
+# 名前付きでphpコンテナ作成
+docker run -p 80:80 --name php -d php:5.6-apache
+# コンテナに接続してコンテンツを作成
+docker exec -ti php bash
+echo '<?php phpinfo();' > index.php
+(ブラウザで192.168.33.20に接続してphpinfoが表示されることを確認)
+# コンテナを抜ける
+exit
+
+# ディレクトリの共有してみる(ローカルでコンテンツ作成)
+docker ps -a
+docker rm -f cd6476a9b949
+echo '<?php phpinfo();' > ~/share/index.php
+docker run -p 80:80 -v ~/share:/var/www/html --name php -d php:5.6-apache
+
+# MySQLコンテナを作成し接続、MySQLへログイン、接続を確認したら抜ける
+docker run --name mysql -e MYSQL_ROOT_PASSWORD=pass -d mysql:5.7
+docker exec -ti mysql bash
+mysql -ppass
+quit
+exit
+
+# 試しに作成したコンテナを削除
+docker ps -a
+docker rm -f 77b105331171
+docker rm -f 07097977011f
+
+# dockerfileを作成 カスタムしたPHPでコンテナを作成できることを確認
+mkdir ~/share/dockfile
+vi ~/share/dockfile/Dockerfile
+--------------------
+FROM php:5.6-apache
+RUN docker-php-ext-install pdo_mysql mysqli mbstring
+--------------------
+docker build -t php:custom ~/share/dockerfile
+docker images
+
+# カスタムしたMySQLでコンテナを作成
+mkdir ~/share/mysql
+vi ~/share/mysql/custom.cnf
+--------------------
+[mysqld]
+character-set-server=utf8
+--------------------
+docker run --name mysql -v ~/share/mysql:/etc/mysql/conf.d -e MYSQL_ROOT_PASSWORD=pass -d mysql:5.7
+
+# カスタムPHPをMySQLとリンクした状態で起動
+mkdir ~/share/html
+docker run -p 80:80 -v ~/share/html:/var/www/html --link mysql:mysql --name php -d php:custom
+docker exec -ti php bash
+cat /etc/hosts
+------------------
+172.17.1.208	mysql
+------------------
+exit
+
+# phpMyAdminの導入
+cd share/html/
+wget https://files.phpmyadmin.net/phpMyAdmin/4.5.1/phpMyAdmin-4.5.1-all-languages.tar.gz
+tar zxf phpMyAdmin-4.5.1-all-languages.tar.gz
+rm phpMyAdmin-4.5.1-all-languages.tar.gz
+mv phpMyAdmin-4.5.1-all-languages myadmin
+cd myadmin/
+cp config.sample.inc.php config.inc.php
+vi config.inc.php
+------------------
+$cfg['Servers'][$i]['host'] = 'mysql';
+------------------
+(ブラウザでhttp://192.168.33.20/myadmin/に接続してphpmyadminが表示されることを確認)
+(root / pass でログインが成功することを確認)
+
+# phpmyadminでデータベースとテーブルを作成
+--------------------
+CREATE DATABASE test;
+USE test;
+CREATE TABLE test(name VARCHAR(100));
+--------------------
+cd ../
+vi test.php
+--------------------
+<meta charset="UTF-8">
+<title>テスト</title>
+<?php
+$db = new PDO('mysql:host=mysql;dbname=test', 'root', 'pass');
+$db->query("INSERT INTO test VALUES('テスト太郎')");
+$st = $db->query("SELECT * FROM test");
+var_dump($st->fetchAll());
+--------------------
+(ブラウザでhttp://192.168.33.20/test.phpに接続してレコードが表示されることを確認)
